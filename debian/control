@@ -9,7 +9,7 @@ Homepage: https://github.com/lume/lume
 Package: lume
 Architecture: all
 Depends: ${misc:Depends}, python3, python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1, ddcutil
-Description: Utilitário minimalista de controle de brilho
- Lume é um utilitário de controle de brilho focado na filosofia "abrir,
- ajustar no slider e fechar". Compatível com monitores externos via
- DDC/CI e telas de notebook via sysfs.
+Description: Minimalist brightness control utility
+ Lume is a minimalist brightness control utility focused on the
+ "open, adjust the slider, and close" philosophy. Compatible with
+ external monitors via DDC/CI and laptop screens via sysfs.

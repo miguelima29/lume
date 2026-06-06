@@ -1,42 +1,42 @@
 # Lume
 
-**Lume** é um utilitário de controle de brilho minimalista, construído em Python, GTK4 e Libadwaita para Linux. Focado na filosofia "abrir, ajustar no slider e fechar", ele visa simplicidade extrema sem perder poder. 
+**Lume** is a minimalist brightness control utility built in Python, GTK4, and Libadwaita for Linux. Designed around the philosophy of "open, adjust the slider, and close", it aims for extreme simplicity without sacrificing power.
 
-O Lume possui suporte universal: controla de forma fluida tanto monitores embutidos (telas de Notebooks) via `sysfs`, quanto múltiplos monitores externos conectados via HDMI/DisplayPort através do protocolo DDC/CI (usando `ddcutil`).
+Lume features universal support: it fluidly controls both built-in displays (laptop screens) via `sysfs`, and multiple external monitors connected via HDMI/DisplayPort through the DDC/CI protocol (using `ddcutil`).
 
-## Instalação
+## Installation
 
-A maneira mais fácil e recomendada de instalar o Lume é utilizando os instaladores nativos. Eles já baixam e configuram tudo (Python, GTK4, dependências) sem que você precise se preocupar.
+The easiest and recommended way to install Lume is by using the native installers. They automatically download and configure everything (Python, GTK4, dependencies) so you don't have to worry.
 
 ### Ubuntu, Linux Mint, Debian (.deb)
-Baixe o arquivo `.deb` mais recente na aba **Releases** do GitHub e instale com dois cliques. Se preferir pelo terminal:
+Download the latest `.deb` file from the GitHub **Releases** tab and install it with a double click. Alternatively, via terminal:
 ```bash
 sudo apt install ./lume_1.0.0-1_all.deb
 ```
 
 ### Fedora, CentOS, openSUSE (.rpm)
-Baixe o arquivo `.rpm` mais recente na aba **Releases** do GitHub e instale com dois cliques. Via terminal:
+Download the latest `.rpm` file from the GitHub **Releases** tab and install it with a double click. Alternatively, via terminal:
 ```bash
 sudo dnf install ./lume-1.0.0-1.noarch.rpm
 ```
 
 ---
 
-## Desinstalação
+## Uninstallation
 
-Como o Lume utiliza instaladores nativos, ele pode ser removido facilmente através do gerenciador de pacotes do seu sistema.
+Since Lume uses native installers, it can be easily removed through your system's package manager.
 
-**Para desinstalar no Ubuntu/Debian:**
+**To uninstall on Ubuntu/Debian:**
 ```bash
 sudo apt remove lume
 ```
 
-**Para desinstalar no Fedora/openSUSE:**
+**To uninstall on Fedora/openSUSE:**
 ```bash
 sudo dnf remove lume
 ```
 
-Se quiser limpar completamente os arquivos de configuração local e rotinas do seu usuário:
+If you want to completely clean up local configuration files and user routines:
 ```bash
 rm -rf ~/.config/lume
 rm -f ~/.config/autostart/lume-daemon.desktop
@@ -45,26 +45,26 @@ rm -f ~/.cache/lume.json
 
 ---
 
-## Recursos Principais
-- **Design Minimalista:** Integração nativa com o ecossistema GNOME (GTK4 + Libadwaita).
-- **Controle Simultâneo:** Deslize o brilho de várias telas ao mesmo tempo de forma assíncrona, sem o app travar ou engasgar.
-- **Detecção Inteligente:** O aplicativo faz cache dos monitores externos e sincroniza o hardware instantaneamente assim que abre.
-- **Rotinas Automáticas:** Um *Daemon* invisível embutido permite agendar trocas de brilho independentes para cada monitor em horários específicos.
+## Key Features
+- **Minimalist Design:** Native integration with the GNOME ecosystem (GTK4 + Libadwaita).
+- **Simultaneous Control:** Adjust the brightness of multiple screens at the same time asynchronously, without the app freezing or stuttering.
+- **Smart Detection:** The application caches external monitors and syncs hardware status instantly upon opening.
+- **Automated Routines:** A built-in invisible background *Daemon* allows you to schedule independent brightness adjustments for each monitor at specific times.
 
-## Dúvidas Frequentes (Permissões)
-Para controlar monitores externos, o Linux exige permissões especiais no barramento i2c. Os pacotes `.deb` e `.rpm` fornecidos acima já instalam automaticamente as regras corretas de *udev*. Caso seus monitores externos não apareçam na primeira vez, **reinicie o computador** para que o grupo de vídeo seja aplicado ao seu usuário.
+## FAQ (Permissions)
+To control external monitors, Linux requires special permissions on the i2c bus. The `.deb` and `.rpm` packages provided above automatically install the correct *udev* rules. If your external monitors don't show up the first time, **restart your computer** to apply the video group permissions to your user account.
 
-## Empacotamento a partir da Fonte (Desenvolvedores)
+## Packaging from Source (For Developers)
 
-Se você clonou este repositório e deseja compilar o seu próprio instalador localmente:
+If you have cloned this repository and want to compile your own installer locally:
 
-**Gerar pacote .deb (Ubuntu/Debian):**
+**Build .deb package (Ubuntu/Debian):**
 ```bash
 sudo apt install devscripts debhelper
 dpkg-buildpackage -us -uc -b
 ```
 
-**Gerar pacote .rpm (Fedora/RedHat):**
+**Build .rpm package (Fedora/RedHat):**
 ```bash
 rpmbuild -ba lume.spec
 ```

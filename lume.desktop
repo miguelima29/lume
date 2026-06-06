@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=Lume
-Comment=Utilitário minimalista de controle de brilho
+Comment=Minimalist brightness control utility
 Exec=lume
 Icon=lume
 Terminal=false

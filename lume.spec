@@ -1,7 +1,7 @@
 Name:           lume
 Version:        1.0.0
 Release:        1%{?dist}
-Summary:        Utilitário minimalista de controle de brilho
+Summary:        Minimalist brightness control utility
 License:        GPLv3+
 URL:            https://github.com/lume/lume
 Source0:        %{name}-%{version}.tar.gz
@@ -13,9 +13,9 @@ Requires:       libadwaita
 Requires:       ddcutil
 
 %description
-Lume é um utilitário de controle de brilho minimalista focado 
-na filosofia "abrir, ajustar no slider e fechar". Compatível com monitores 
-externos via DDC/CI e telas de notebook via sysfs.
+Lume is a minimalist brightness control utility focused on the 
+"open, adjust the slider, and close" philosophy. Compatible with external 
+monitors via DDC/CI and laptop screens via sysfs.
 
 %prep
 %setup -q
