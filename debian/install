@@ -1,0 +1,4 @@
+lume usr/bin/
+lume.desktop usr/share/applications/
+lume.svg usr/share/icons/hicolor/scalable/apps/
+99-lume.rules etc/udev/rules.d/

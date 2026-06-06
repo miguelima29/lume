@@ -1,0 +1,12 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ]; then
+    udevadm control --reload-rules || true
+    udevadm trigger || true
+    update-desktop-database -q || true
+    gtk-update-icon-cache -q /usr/share/icons/hicolor || true
+fi
+
+#DEBHELPER#
+exit 0

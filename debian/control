@@ -1,0 +1,15 @@
+Source: lume
+Section: utils
+Priority: optional
+Maintainer: Desenvolvedor <dev@lume.local>
+Build-Depends: debhelper-compat (= 13)
+Standards-Version: 4.5.0
+Homepage: https://github.com/lume/lume
+
+Package: lume
+Architecture: all
+Depends: ${misc:Depends}, python3, python3-gi, gir1.2-gtk-4.0, gir1.2-adw-1, ddcutil
+Description: Utilitário minimalista de controle de brilho
+ Lume é um utilitário de controle de brilho focado na filosofia "abrir,
+ ajustar no slider e fechar". Compatível com monitores externos via
+ DDC/CI e telas de notebook via sysfs.

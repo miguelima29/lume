@@ -10,24 +10,27 @@ Lume tem suporte tanto para monitores embutidos (Notebooks) via `sysfs`, quanto 
 - **Detecção Inteligente:** O backend faz cache dos monitores externos e sincroniza o hardware instantaneamente.
 - **Rotinas Automáticas:** Um *Daemon* de segundo plano embutido permite agendar trocas de brilho por monitor em horários específicos.
 
-## Pré-requisitos
-Para rodar o Lume localmente ou compilá-lo:
-* `python3` e `python3-gobject`
-* `gtk4` e `libadwaita`
-* `ddcutil`
+## Permissões (DDC/CI)
+Para controlar monitores externos sem ser root, as regras udev instaladas pelo pacote dão acesso aos usuários do grupo `video` ou à sessão atual.
 
-## Permissões
-Para controlar monitores externos sem ser root, seu usuário precisa ter acesso ao barramento i2c.
-As regras udev incluídas no projeto já dão acesso aos usuários do grupo `video` ou à sessão atual.
+## Como Compilar e Empacotar
 
-## Como Executar
+O Lume possui estrutura nativa para as duas maiores famílias de distribuições Linux:
+
+### 1. Ubuntu, Linux Mint, Debian (.deb)
+Para compilar o pacote `.deb`:
 ```bash
-python3 lume
+sudo apt install devscripts debhelper
+dpkg-buildpackage -us -uc -b
+```
+Isso irá gerar um arquivo `.deb` no diretório anterior, que pode ser instalado com:
+```bash
+sudo apt install ../lume_1.0.0-1_all.deb
 ```
 
-## Empacotamento
-O projeto possui um arquivo `lume.spec` para build nativo em RPM (Fedora, RHEL, openSUSE).
-Para construir o pacote:
+### 2. Fedora, RHEL, openSUSE (.rpm)
+Para compilar o pacote `.rpm`:
 ```bash
 rpmbuild -ba lume.spec
 ```
+Isso irá gerar o pacote no seu diretório `~/rpmbuild/RPMS/`.
