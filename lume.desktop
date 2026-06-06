@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Lume
+Comment=Utilitário minimalista de controle de brilho
+Exec=lume
+Icon=lume
+Terminal=false
+Type=Application
+Categories=Utility;Settings;HardwareSettings;
+StartupNotify=true

@@ -1,0 +1,593 @@
+#!/usr/bin/env python3
+import sys
+import os
+import subprocess
+import glob
+import json
+import threading
+import queue
+import time
+from datetime import datetime
+import gi
+
+gi.require_version('Gtk', '4.0')
+gi.require_version('Adw', '1')
+from gi.repository import Gtk, Adw, GLib, Pango
+
+CACHE_FILE = os.path.expanduser("~/.cache/lume.json")
+ROUTINES_FILE = os.path.expanduser("~/.config/lume/routines.json")
+
+# ==========================================
+# DAEMON LOGIC (BACKGROUND)
+# ==========================================
+def apply_routine(routine):
+    val = routine.get("brightness", 50)
+    monitor_id = routine.get("monitor_id", "all")
+    
+    # Aplica no sysfs (Notebooks)
+    if monitor_id == "all" or monitor_id.startswith("sysfs_"):
+        for path in glob.glob("/sys/class/backlight/*"):
+            name = os.path.basename(path)
+            if monitor_id == "all" or monitor_id == f"sysfs_{name}":
+                try:
+                    with open(os.path.join(path, "max_brightness"), "r") as f:
+                        max_b = int(f.read().strip())
+                    new_b = int((val / 100.0) * max_b)
+                    with open(os.path.join(path, "brightness"), "w") as f:
+                        f.write(str(new_b))
+                except: pass
+    
+    # Aplica no ddcutil
+    if monitor_id == "all" or monitor_id.startswith("ddc_"):
+        if os.path.exists(CACHE_FILE):
+            try:
+                with open(CACHE_FILE, "r") as f:
+                    data = json.load(f)
+                for item in data:
+                    if monitor_id == "all" or monitor_id == item['id']:
+                        bus = item['bus']
+                        subprocess.run(
+                            ["ddcutil", "setvcp", "10", str(val), "--bus", str(bus)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                        )
+            except: pass
+
+def run_daemon():
+    pid_file = os.path.expanduser("~/.config/lume/daemon.pid")
+    os.makedirs(os.path.dirname(pid_file), exist_ok=True)
+    with open(pid_file, "w") as f:
+        f.write(str(os.getpid()))
+
+    last_applied = None
+    while True:
+        now = datetime.now()
+        current_hm = now.strftime("%H:%M")
+        
+        if current_hm != last_applied:
+            if os.path.exists(ROUTINES_FILE):
+                try:
+                    with open(ROUTINES_FILE, "r") as f:
+                        routines = json.load(f)
+                except: routines = []
+                
+                for r in routines:
+                    if r.get("time") == current_hm and r.get("enabled", True):
+                        apply_routine(r)
+                last_applied = current_hm
+        
+        time.sleep(10)
+
+if len(sys.argv) > 1 and sys.argv[1] == "--daemon":
+    run_daemon()
+    sys.exit(0)
+
+
+# ==========================================
+# FRONTEND / GUI
+# ==========================================
+class Monitor:
+    def __init__(self, id, name, type, bus_or_path):
+        self.id = id
+        self.name = name
+        self.type = type # 'sysfs' or 'ddcutil'
+        self.bus_or_path = bus_or_path
+        self.q = queue.Queue()
+        self.thread = threading.Thread(target=self._worker, daemon=True)
+        self.thread.start()
+
+    def set_brightness(self, value):
+        while not self.q.empty():
+            try: self.q.get_nowait()
+            except queue.Empty: break
+        self.q.put(int(value))
+
+    def _worker(self):
+        while True:
+            value = self.q.get()
+            if self.type == 'sysfs':
+                try:
+                    with open(os.path.join(self.bus_or_path, "max_brightness"), "r") as f:
+                        max_b = int(f.read().strip())
+                    new_b = int((value / 100.0) * max_b)
+                    with open(os.path.join(self.bus_or_path, "brightness"), "w") as f:
+                        f.write(str(new_b))
+                except Exception:
+                    pass
+            elif self.type == 'ddcutil':
+                try:
+                    subprocess.run(
+                        ["ddcutil", "setvcp", "10", str(value), "--bus", str(self.bus_or_path)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL
+                    )
+                except Exception:
+                    pass
+
+class RoutineDialog(Adw.Window):
+    def __init__(self, parent):
+        super().__init__(title="Rotinas", transient_for=parent, modal=True)
+        self.set_default_size(350, 450)
+        
+        toolbar_view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        toolbar_view.add_top_bar(header)
+        
+        self.list_box = Gtk.ListBox()
+        self.list_box.set_selection_mode(Gtk.SelectionMode.NONE)
+        self.list_box.add_css_class("boxed-list")
+        
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_child(self.list_box)
+        scroll.set_vexpand(True)
+        
+        main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+        main_box.set_margin_start(12)
+        main_box.set_margin_end(12)
+        main_box.set_margin_top(12)
+        main_box.set_margin_bottom(12)
+        
+        main_box.append(scroll)
+        
+        add_btn = Gtk.Button(label="Adicionar Nova Rotina")
+        add_btn.add_css_class("suggested-action")
+        add_btn.connect("clicked", self.on_add_clicked)
+        main_box.append(add_btn)
+        
+        toolbar_view.set_content(main_box)
+        self.set_content(toolbar_view)
+        
+        os.makedirs(os.path.dirname(ROUTINES_FILE), exist_ok=True)
+        self.load_routines()
+        self.ensure_autostart()
+        
+    def ensure_autostart(self):
+        autostart_dir = os.path.expanduser("~/.config/autostart")
+        os.makedirs(autostart_dir, exist_ok=True)
+        desktop_file = os.path.join(autostart_dir, "lume-daemon.desktop")
+        
+        executable = os.path.abspath(sys.argv[0])
+        exec_cmd = f"{sys.executable} {executable} --daemon" if executable.endswith(".py") or "python" in sys.executable else f"{executable} --daemon"
+        
+        content = f"[Desktop Entry]\nType=Application\nExec={exec_cmd}\nHidden=false\nNoDisplay=false\nX-GNOME-Autostart-enabled=true\nName=Lume Daemon\n"
+        with open(desktop_file, "w") as f:
+            f.write(content)
+            
+        pid_file = os.path.expanduser("~/.config/lume/daemon.pid")
+        if os.path.exists(pid_file):
+            try:
+                with open(pid_file, "r") as f:
+                    pid = int(f.read().strip())
+                os.kill(pid, 0)
+                return
+            except:
+                pass
+        
+        subprocess.Popen([sys.executable, executable, "--daemon"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def get_monitor_options(self):
+        options = [("all", "Todos os Monitores")]
+        for path in glob.glob("/sys/class/backlight/*"):
+            name = os.path.basename(path)
+            options.append((f"sysfs_{name}", f"Integrada ({name})"))
+            
+        if os.path.exists(CACHE_FILE):
+            try:
+                with open(CACHE_FILE, "r") as f:
+                    data = json.load(f)
+                for item in data:
+                    options.append((item['id'], item['name']))
+            except: pass
+        return options
+
+    def load_routines(self):
+        while self.list_box.get_first_child():
+            self.list_box.remove(self.list_box.get_first_child())
+            
+        if os.path.exists(ROUTINES_FILE):
+            try:
+                with open(ROUTINES_FILE, "r") as f:
+                    self.routines = json.load(f)
+            except: self.routines = []
+        else:
+            self.routines = []
+            
+        opts = {k: v for k, v in self.get_monitor_options()}
+            
+        for i, r in enumerate(self.routines):
+            monitor_name = opts.get(r.get("monitor_id", "all"), "Desconhecido")
+            title = f"{r['time']} ➔ {r['brightness']}%"
+            subtitle = f"Alvo: {monitor_name}"
+            
+            row = Adw.ActionRow(title=title, subtitle=subtitle)
+            
+            switch = Gtk.Switch()
+            switch.set_valign(Gtk.Align.CENTER)
+            switch.set_active(r.get("enabled", True))
+            switch.connect("notify::active", self.on_toggle, i)
+            row.add_suffix(switch)
+            
+            del_btn = Gtk.Button()
+            del_btn.set_icon_name("user-trash-symbolic")
+            del_btn.set_valign(Gtk.Align.CENTER)
+            del_btn.add_css_class("destructive-action")
+            del_btn.connect("clicked", self.on_delete, i)
+            row.add_suffix(del_btn)
+            
+            self.list_box.append(row)
+
+    def save_routines(self):
+        with open(ROUTINES_FILE, "w") as f:
+            json.dump(self.routines, f)
+
+    def on_toggle(self, switch, param, index):
+        self.routines[index]["enabled"] = switch.get_active()
+        self.save_routines()
+        
+    def on_delete(self, btn, index):
+        del self.routines[index]
+        self.save_routines()
+        self.load_routines()
+
+    def on_add_clicked(self, btn):
+        dialog = Adw.Window(title="Nova Rotina", transient_for=self, modal=True)
+        dialog.set_default_size(350, -1)
+        
+        toolbar_view = Adw.ToolbarView()
+        header = Adw.HeaderBar()
+        toolbar_view.add_top_bar(header)
+        
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+        box.set_margin_start(16)
+        box.set_margin_end(16)
+        box.set_margin_top(16)
+        box.set_margin_bottom(16)
+        
+        box.append(Gtk.Label(label="Monitor Alvo:", halign=Gtk.Align.START))
+        monitors = self.get_monitor_options()
+        monitor_strings = [m[1] for m in monitors]
+        model = Gtk.StringList.new(monitor_strings)
+        dropdown = Gtk.DropDown.new(model=model, expression=None)
+        box.append(dropdown)
+        
+        box.append(Gtk.Label(label="Horário:", halign=Gtk.Align.START))
+        time_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12, halign=Gtk.Align.CENTER)
+        
+        now = datetime.now()
+        
+        hour_adj = Gtk.Adjustment(value=now.hour, lower=0, upper=23, step_increment=1)
+        hour_spin = Gtk.SpinButton(adjustment=hour_adj, numeric=True, orientation=Gtk.Orientation.VERTICAL)
+        hour_spin.set_wrap(True)
+        
+        min_adj = Gtk.Adjustment(value=now.minute, lower=0, upper=59, step_increment=1)
+        min_spin = Gtk.SpinButton(adjustment=min_adj, numeric=True, orientation=Gtk.Orientation.VERTICAL)
+        min_spin.set_wrap(True)
+        
+        colon = Gtk.Label(label=":")
+        colon.add_css_class("title-1")
+        
+        time_box.append(hour_spin)
+        time_box.append(colon)
+        time_box.append(min_spin)
+        box.append(time_box)
+        
+        box.append(Gtk.Label(label="Brilho:", halign=Gtk.Align.START))
+        scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+        scale.set_value(50)
+        scale.set_draw_value(True)
+        box.append(scale)
+        
+        save_btn = Gtk.Button(label="Salvar Rotina")
+        save_btn.add_css_class("suggested-action")
+        save_btn.set_margin_top(12)
+        
+        def on_save(b):
+            h = int(hour_spin.get_value())
+            m = int(min_spin.get_value())
+            t = f"{h:02d}:{m:02d}"
+            
+            selected_idx = dropdown.get_selected()
+            selected_id = monitors[selected_idx][0]
+            
+            self.routines.append({
+                "time": t, 
+                "monitor_id": selected_id,
+                "brightness": int(scale.get_value()), 
+                "enabled": True
+            })
+            self.save_routines()
+            self.load_routines()
+            dialog.close()
+                
+        save_btn.connect("clicked", on_save)
+        box.append(save_btn)
+        
+        toolbar_view.set_content(box)
+        dialog.set_content(toolbar_view)
+        dialog.present()
+
+
+class LumeWindow(Adw.ApplicationWindow):
+    def __init__(self, app):
+        super().__init__(application=app, title="Lume")
+        self.set_default_size(350, -1) # Auto altura
+        self.set_resizable(False)
+        self.connect("close-request", self.on_close_request)
+        
+        toolbar_view = Adw.ToolbarView()
+        
+        self.header = Adw.HeaderBar()
+        
+        refresh_btn = Gtk.Button()
+        refresh_btn.set_icon_name("view-refresh-symbolic")
+        refresh_btn.set_tooltip_text("Recarregar Monitores")
+        refresh_btn.connect("clicked", self.on_refresh_clicked)
+        self.header.pack_start(refresh_btn)
+        
+        routine_btn = Gtk.Button()
+        routine_btn.set_icon_name("alarm-symbolic")
+        routine_btn.set_tooltip_text("Rotinas")
+        routine_btn.connect("clicked", self.on_routine_clicked)
+        self.header.pack_end(routine_btn)
+        
+        toolbar_view.add_top_bar(self.header)
+        
+        self.main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
+        self.main_box.set_margin_start(24)
+        self.main_box.set_margin_end(24)
+        self.main_box.set_margin_top(24)
+        self.main_box.set_margin_bottom(24)
+        
+        scroll = Gtk.ScrolledWindow()
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_child(self.main_box)
+        scroll.set_propagate_natural_height(True)
+        scroll.set_max_content_height(450)
+        
+        toolbar_view.set_content(scroll)
+        self.set_content(toolbar_view)
+        
+        self.monitors = {}
+        self.sliders = {}
+        self.debounces = {}
+
+        self.load_cache_and_sysfs()
+        
+        threading.Thread(target=self.detect_monitors_bg, daemon=True).start()
+
+    def on_close_request(self, window):
+        dialog = Adw.MessageDialog(
+            heading="Encerrar Lume?",
+            body="Você deseja fechar o aplicativo e manter as rotinas ativas, ou encerrar tudo definitivamente?",
+            transient_for=self,
+        )
+        dialog.add_response("cancel", "Cancelar")
+        dialog.add_response("close", "Encerrar Tudo")
+        dialog.add_response("background", "Manter Rotinas")
+        
+        dialog.set_response_appearance("close", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_response_appearance("background", Adw.ResponseAppearance.SUGGESTED)
+        
+        def on_response(d, response):
+            if response == "cancel":
+                pass
+            elif response == "background":
+                self.get_application().quit()
+            elif response == "close":
+                pid_file = os.path.expanduser("~/.config/lume/daemon.pid")
+                if os.path.exists(pid_file):
+                    try:
+                        with open(pid_file, "r") as f:
+                            pid = int(f.read().strip())
+                        os.kill(pid, 15)
+                    except: pass
+                
+                autostart_dir = os.path.expanduser("~/.config/autostart")
+                desktop_file = os.path.join(autostart_dir, "lume-daemon.desktop")
+                if os.path.exists(desktop_file):
+                    os.remove(desktop_file)
+                self.get_application().quit()
+        
+        dialog.connect("response", on_response)
+        dialog.present()
+        return True
+
+    def on_routine_clicked(self, btn):
+        win = RoutineDialog(self)
+        win.present()
+
+    def on_refresh_clicked(self, btn):
+        if hasattr(self, 'loading_label') and self.loading_label.get_parent():
+            return
+        self.loading_label = Gtk.Label(label="Procurando monitores...")
+        self.loading_label.add_css_class("dim-label")
+        self.main_box.append(self.loading_label)
+        threading.Thread(target=self.detect_monitors_bg, daemon=True).start()
+
+    def load_cache_and_sysfs(self):
+        has_monitors = False
+        
+        for path in glob.glob("/sys/class/backlight/*"):
+            name = os.path.basename(path)
+            monitor_id = f"sysfs_{name}"
+            if monitor_id not in self.monitors:
+                self.add_monitor(Monitor(monitor_id, f"Tela Integrada ({name})", "sysfs", path))
+                has_monitors = True
+        
+        if os.path.exists(CACHE_FILE):
+            try:
+                with open(CACHE_FILE, "r") as f:
+                    data = json.load(f)
+                for item in data:
+                    if item['id'] not in self.monitors:
+                        self.add_monitor(Monitor(item['id'], item['name'], "ddcutil", item['bus']))
+                        has_monitors = True
+            except Exception:
+                pass
+
+        if not has_monitors:
+            self.loading_label = Gtk.Label(label="Procurando monitores...")
+            self.loading_label.add_css_class("dim-label")
+            self.main_box.append(self.loading_label)
+
+    def detect_monitors_bg(self):
+        try:
+            result = subprocess.run(["ddcutil", "detect", "-t"], capture_output=True, text=True)
+            lines = result.stdout.split('\n')
+            
+            detected = []
+            seen_monitors = set()
+            current_bus = None
+            current_drm = None
+            
+            for line in lines:
+                line = line.strip()
+                if line.startswith("I2C bus:"):
+                    current_bus = line.split("i2c-")[-1].strip()
+                elif line.startswith("DRM connector:"):
+                    current_drm = line.split(":")[-1].strip()
+                elif line.startswith("Monitor:"):
+                    name = line.split("Monitor:")[-1].strip()
+                    if current_bus and name:
+                        uid = f"{current_drm}_{name}"
+                        if uid not in seen_monitors:
+                            seen_monitors.add(uid)
+                            monitor_id = f"ddc_{current_bus}"
+                            detected.append({
+                                "id": monitor_id,
+                                "name": name,
+                                "bus": current_bus
+                            })
+            
+            if detected:
+                with open(CACHE_FILE, "w") as f:
+                    json.dump(detected, f)
+
+            GLib.idle_add(self.update_ui_from_detection, detected)
+        except Exception as e:
+            print("Falha na detecção ddcutil:", e)
+
+    def update_ui_from_detection(self, detected_monitors):
+        if hasattr(self, 'loading_label') and self.loading_label.get_parent():
+            self.main_box.remove(self.loading_label)
+            
+        for item in detected_monitors:
+            if item['id'] not in self.monitors:
+                self.add_monitor(Monitor(item['id'], item['name'], "ddcutil", item['bus']))
+        return False
+
+    def add_monitor(self, monitor):
+        self.monitors[monitor.id] = monitor
+        
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        
+        label = Gtk.Label(label=monitor.name)
+        label.set_halign(Gtk.Align.START)
+        label.add_css_class("dim-label")
+        label.set_ellipsize(Pango.EllipsizeMode.END)
+        box.append(label)
+        
+        slider_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        
+        icon_dim = Gtk.Image.new_from_icon_name("display-brightness-symbolic")
+        icon_dim.set_opacity(0.5)
+        
+        scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+        scale.set_value(50)
+        scale.set_draw_value(True)
+        scale.set_value_pos(Gtk.PositionType.TOP)
+        scale.set_hexpand(True)
+        scale.connect("value-changed", self.on_value_changed, monitor)
+        
+        icon_bright = Gtk.Image.new_from_icon_name("display-brightness-symbolic")
+        
+        slider_box.append(icon_dim)
+        slider_box.append(scale)
+        slider_box.append(icon_bright)
+        
+        box.append(slider_box)
+        self.main_box.append(box)
+        self.sliders[monitor.id] = scale
+        
+        self.fetch_current_brightness(monitor, scale)
+
+    def fetch_current_brightness(self, monitor, scale):
+        def worker():
+            val = 50
+            if monitor.type == 'sysfs':
+                try:
+                    with open(os.path.join(monitor.bus_or_path, "max_brightness"), "r") as f:
+                        max_b = int(f.read().strip())
+                    with open(os.path.join(monitor.bus_or_path, "brightness"), "r") as f:
+                        curr_b = int(f.read().strip())
+                    if max_b > 0:
+                        val = int((curr_b / max_b) * 100.0)
+                except Exception:
+                    pass
+            elif monitor.type == 'ddcutil':
+                try:
+                    result = subprocess.run(["ddcutil", "getvcp", "10", "--bus", str(monitor.bus_or_path), "-t"], capture_output=True, text=True)
+                    parts = result.stdout.strip().split()
+                    if len(parts) >= 4 and parts[3].isdigit():
+                        val = int(parts[3])
+                except Exception:
+                    pass
+            GLib.idle_add(self.update_scale_silently, scale, val)
+        threading.Thread(target=worker, daemon=True).start()
+
+    def update_scale_silently(self, scale, value):
+        scale.is_updating = True
+        scale.set_value(value)
+        scale.is_updating = False
+        return False
+
+    def on_value_changed(self, scale, monitor):
+        if getattr(scale, "is_updating", False):
+            return
+            
+        value = scale.get_value()
+        
+        if monitor.id in self.debounces:
+            GLib.source_remove(self.debounces[monitor.id])
+            
+        self.debounces[monitor.id] = GLib.timeout_add(150, self._apply_brightness, monitor, value)
+
+    def _apply_brightness(self, monitor, value):
+        if monitor.id in self.debounces:
+            del self.debounces[monitor.id]
+        monitor.set_brightness(value)
+        return False
+
+class LumeApp(Adw.Application):
+    def __init__(self):
+        super().__init__(application_id="com.github.lume")
+
+    def do_activate(self):
+        win = self.props.active_window
+        if not win:
+            win = LumeWindow(self)
+        win.present()
+
+if __name__ == "__main__":
+    app = LumeApp()
+    app.run(sys.argv)

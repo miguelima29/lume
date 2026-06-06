@@ -1,0 +1,5 @@
+# Permite que usuários na sessão ativa (via uaccess) ou do grupo video acessem dispositivos i2c (DDC/CI)
+SUBSYSTEM=="i2c-dev", KERNEL=="i2c-[0-9]*", TAG+="uaccess", GROUP="video", MODE="0660"
+
+# Permite que o grupo video ou proprietário tenha acesso de gravação no controle de backlight via sysfs
+SUBSYSTEM=="backlight", ACTION=="add", RUN+="/bin/chgrp video /sys/class/backlight/%k/brightness", RUN+="/bin/chmod 0660 /sys/class/backlight/%k/brightness"
