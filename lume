@@ -16,15 +16,39 @@ from gi.repository import Gtk, Adw, GLib, Pango
 
 CACHE_FILE = os.path.expanduser("~/.cache/lume.json")
 ROUTINES_FILE = os.path.expanduser("~/.config/lume/routines.json")
+STATE_FILE = os.path.expanduser("~/.config/lume/daemon_state.json")
+
+def read_routines_file():
+    if os.path.exists(ROUTINES_FILE):
+        try:
+            with open(ROUTINES_FILE, "r") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return {"default_brightness": 100, "routines": data}
+                return data
+        except: pass
+    return {"default_brightness": 100, "routines": []}
+
+def write_routines_file(data):
+    with open(ROUTINES_FILE, "w") as f:
+        json.dump(data, f)
+
+def write_daemon_state(monitor_id, value):
+    state = {}
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, "r") as f:
+                state = json.load(f)
+        except: pass
+    state[monitor_id] = value
+    with open(STATE_FILE, "w") as f:
+        json.dump(state, f)
 
 # ==========================================
 # DAEMON LOGIC (BACKGROUND)
 # ==========================================
-def apply_routine(routine):
-    val = routine.get("brightness", 50)
-    monitor_id = routine.get("monitor_id", "all")
-    
-    # Aplica no sysfs (Notebooks)
+def apply_routine_daemon(monitor_id, val):
+    write_daemon_state(monitor_id, val)
     if monitor_id == "all" or monitor_id.startswith("sysfs_"):
         for path in glob.glob("/sys/class/backlight/*"):
             name = os.path.basename(path)
@@ -37,7 +61,6 @@ def apply_routine(routine):
                         f.write(str(new_b))
                 except: pass
     
-    # Aplica no ddcutil
     if monitor_id == "all" or monitor_id.startswith("ddc_"):
         if os.path.exists(CACHE_FILE):
             try:
@@ -52,30 +75,68 @@ def apply_routine(routine):
                         )
             except: pass
 
+def time_to_mins(t_str):
+    if not t_str: return 0
+    h, m = map(int, t_str.split(':'))
+    return h * 60 + m
+
+def is_active_now(start_str, end_str):
+    now = datetime.now()
+    now_m = now.hour * 60 + now.minute
+    start_m = time_to_mins(start_str)
+    end_m = time_to_mins(end_str)
+    
+    if start_m <= end_m:
+        return start_m <= now_m < end_m
+    else:
+        return now_m >= start_m or now_m < end_m
+
 def run_daemon():
     pid_file = os.path.expanduser("~/.config/lume/daemon.pid")
     os.makedirs(os.path.dirname(pid_file), exist_ok=True)
     with open(pid_file, "w") as f:
         f.write(str(os.getpid()))
 
-    last_applied = None
+    last_minute = -1
     while True:
         now = datetime.now()
-        current_hm = now.strftime("%H:%M")
+        current_minute = now.minute
         
-        if current_hm != last_applied:
-            if os.path.exists(ROUTINES_FILE):
-                try:
-                    with open(ROUTINES_FILE, "r") as f:
-                        routines = json.load(f)
-                except: routines = []
+        if current_minute != last_minute:
+            data = read_routines_file()
+            default_b = data.get("default_brightness", 100)
+            routines = data.get("routines", [])
+            
+            changes_made = False
+            for r in routines:
+                enabled = r.get("enabled", True)
+                was_active = r.get("is_active", False)
+                monitor_id = r.get("monitor_id", "all")
                 
-                for r in routines:
-                    if r.get("time") == current_hm and r.get("enabled", True):
-                        apply_routine(r)
-                last_applied = current_hm
+                is_active = False
+                if enabled:
+                    if "end_time" in r:
+                        is_active = is_active_now(r["start_time"], r["end_time"])
+                    elif "time" in r and r.get("time") == now.strftime("%H:%M"):
+                        # Legacy single-time trigger backwards compatibility
+                        apply_routine_daemon(monitor_id, r.get("brightness", 50))
+                        continue
+                
+                if is_active and not was_active:
+                    apply_routine_daemon(monitor_id, r.get("brightness", 50))
+                    r["is_active"] = True
+                    changes_made = True
+                elif not is_active and was_active:
+                    apply_routine_daemon(monitor_id, default_b)
+                    r["is_active"] = False
+                    changes_made = True
+                    
+            if changes_made:
+                write_routines_file(data)
+                
+            last_minute = current_minute
         
-        time.sleep(10)
+        time.sleep(5)
 
 if len(sys.argv) > 1 and sys.argv[1] == "--daemon":
     run_daemon()
@@ -126,7 +187,7 @@ class Monitor:
 class RoutineDialog(Adw.Window):
     def __init__(self, parent):
         super().__init__(title="Routines", transient_for=parent, modal=True)
-        self.set_default_size(350, 450)
+        self.set_default_size(380, 550)
         
         toolbar_view = Adw.ToolbarView()
         header = Adw.HeaderBar()
@@ -147,6 +208,21 @@ class RoutineDialog(Adw.Window):
         main_box.set_margin_top(12)
         main_box.set_margin_bottom(12)
         
+        os.makedirs(os.path.dirname(ROUTINES_FILE), exist_ok=True)
+        self.data = read_routines_file()
+        
+        def_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        def_label = Gtk.Label(label="Default Brightness (When inactive):", halign=Gtk.Align.START)
+        def_label.add_css_class("dim-label")
+        def_box.append(def_label)
+        
+        self.def_scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
+        self.def_scale.set_value(self.data.get("default_brightness", 100))
+        self.def_scale.set_draw_value(True)
+        self.def_scale.connect("value-changed", self.on_default_changed)
+        def_box.append(self.def_scale)
+        
+        main_box.append(def_box)
         main_box.append(scroll)
         
         add_btn = Gtk.Button(label="Add New Routine")
@@ -157,9 +233,12 @@ class RoutineDialog(Adw.Window):
         toolbar_view.set_content(main_box)
         self.set_content(toolbar_view)
         
-        os.makedirs(os.path.dirname(ROUTINES_FILE), exist_ok=True)
         self.load_routines()
         self.ensure_autostart()
+        
+    def on_default_changed(self, scale):
+        self.data["default_brightness"] = int(scale.get_value())
+        write_routines_file(self.data)
         
     def ensure_autostart(self):
         autostart_dir = os.path.expanduser("~/.config/autostart")
@@ -204,19 +283,16 @@ class RoutineDialog(Adw.Window):
         while self.list_box.get_first_child():
             self.list_box.remove(self.list_box.get_first_child())
             
-        if os.path.exists(ROUTINES_FILE):
-            try:
-                with open(ROUTINES_FILE, "r") as f:
-                    self.routines = json.load(f)
-            except: self.routines = []
-        else:
-            self.routines = []
-            
         opts = {k: v for k, v in self.get_monitor_options()}
             
-        for i, r in enumerate(self.routines):
+        for i, r in enumerate(self.data.get("routines", [])):
             monitor_name = opts.get(r.get("monitor_id", "all"), "Unknown")
-            title = f"{r['time']} ➔ {r['brightness']}%"
+            
+            if "end_time" in r:
+                title = f"{r['start_time']} to {r['end_time']} ➔ {r['brightness']}%"
+            else:
+                title = f"{r.get('time', '')} ➔ {r.get('brightness', 50)}%"
+                
             subtitle = f"Target: {monitor_name}"
             
             row = Adw.ActionRow(title=title, subtitle=subtitle)
@@ -236,17 +312,20 @@ class RoutineDialog(Adw.Window):
             
             self.list_box.append(row)
 
-    def save_routines(self):
-        with open(ROUTINES_FILE, "w") as f:
-            json.dump(self.routines, f)
-
     def on_toggle(self, switch, param, index):
-        self.routines[index]["enabled"] = switch.get_active()
-        self.save_routines()
+        r = self.data["routines"][index]
+        r["enabled"] = switch.get_active()
+        if not r["enabled"] and r.get("is_active", False):
+            r["is_active"] = False
+            threading.Thread(target=apply_routine_daemon, args=(r.get("monitor_id", "all"), self.data.get("default_brightness", 100)), daemon=True).start()
+        write_routines_file(self.data)
         
     def on_delete(self, btn, index):
-        del self.routines[index]
-        self.save_routines()
+        r = self.data["routines"][index]
+        if r.get("is_active", False):
+            threading.Thread(target=apply_routine_daemon, args=(r.get("monitor_id", "all"), self.data.get("default_brightness", 100)), daemon=True).start()
+        del self.data["routines"][index]
+        write_routines_file(self.data)
         self.load_routines()
 
     def on_add_clicked(self, btn):
@@ -270,28 +349,30 @@ class RoutineDialog(Adw.Window):
         dropdown = Gtk.DropDown.new(model=model, expression=None)
         box.append(dropdown)
         
-        box.append(Gtk.Label(label="Time:", halign=Gtk.Align.START))
-        time_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12, halign=Gtk.Align.CENTER)
-        
+        # Start Time
+        box.append(Gtk.Label(label="Start Time:", halign=Gtk.Align.START))
+        start_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12, halign=Gtk.Align.CENTER)
         now = datetime.now()
+        start_h_spin = Gtk.SpinButton(adjustment=Gtk.Adjustment(value=now.hour, lower=0, upper=23, step_increment=1), numeric=True, orientation=Gtk.Orientation.VERTICAL)
+        start_h_spin.set_wrap(True)
+        start_m_spin = Gtk.SpinButton(adjustment=Gtk.Adjustment(value=now.minute, lower=0, upper=59, step_increment=1), numeric=True, orientation=Gtk.Orientation.VERTICAL)
+        start_m_spin.set_wrap(True)
+        c1 = Gtk.Label(label=":"); c1.add_css_class("title-1")
+        start_box.append(start_h_spin); start_box.append(c1); start_box.append(start_m_spin)
+        box.append(start_box)
+
+        # End Time
+        box.append(Gtk.Label(label="End Time:", halign=Gtk.Align.START))
+        end_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12, halign=Gtk.Align.CENTER)
+        end_h_spin = Gtk.SpinButton(adjustment=Gtk.Adjustment(value=(now.hour+8)%24, lower=0, upper=23, step_increment=1), numeric=True, orientation=Gtk.Orientation.VERTICAL)
+        end_h_spin.set_wrap(True)
+        end_m_spin = Gtk.SpinButton(adjustment=Gtk.Adjustment(value=now.minute, lower=0, upper=59, step_increment=1), numeric=True, orientation=Gtk.Orientation.VERTICAL)
+        end_m_spin.set_wrap(True)
+        c2 = Gtk.Label(label=":"); c2.add_css_class("title-1")
+        end_box.append(end_h_spin); end_box.append(c2); end_box.append(end_m_spin)
+        box.append(end_box)
         
-        hour_adj = Gtk.Adjustment(value=now.hour, lower=0, upper=23, step_increment=1)
-        hour_spin = Gtk.SpinButton(adjustment=hour_adj, numeric=True, orientation=Gtk.Orientation.VERTICAL)
-        hour_spin.set_wrap(True)
-        
-        min_adj = Gtk.Adjustment(value=now.minute, lower=0, upper=59, step_increment=1)
-        min_spin = Gtk.SpinButton(adjustment=min_adj, numeric=True, orientation=Gtk.Orientation.VERTICAL)
-        min_spin.set_wrap(True)
-        
-        colon = Gtk.Label(label=":")
-        colon.add_css_class("title-1")
-        
-        time_box.append(hour_spin)
-        time_box.append(colon)
-        time_box.append(min_spin)
-        box.append(time_box)
-        
-        box.append(Gtk.Label(label="Brightness:", halign=Gtk.Align.START))
+        box.append(Gtk.Label(label="Routine Brightness:", halign=Gtk.Align.START))
         scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)
         scale.set_value(50)
         scale.set_draw_value(True)
@@ -302,20 +383,26 @@ class RoutineDialog(Adw.Window):
         save_btn.set_margin_top(12)
         
         def on_save(b):
-            h = int(hour_spin.get_value())
-            m = int(min_spin.get_value())
-            t = f"{h:02d}:{m:02d}"
+            sh = int(start_h_spin.get_value())
+            sm = int(start_m_spin.get_value())
+            eh = int(end_h_spin.get_value())
+            em = int(end_m_spin.get_value())
+            
+            start_str = f"{sh:02d}:{sm:02d}"
+            end_str = f"{eh:02d}:{em:02d}"
             
             selected_idx = dropdown.get_selected()
             selected_id = monitors[selected_idx][0]
             
-            self.routines.append({
-                "time": t, 
+            self.data["routines"].append({
+                "start_time": start_str, 
+                "end_time": end_str,
                 "monitor_id": selected_id,
                 "brightness": int(scale.get_value()), 
-                "enabled": True
+                "enabled": True,
+                "is_active": False
             })
-            self.save_routines()
+            write_routines_file(self.data)
             self.load_routines()
             dialog.close()
                 
@@ -374,6 +461,28 @@ class LumeWindow(Adw.ApplicationWindow):
         self.load_cache_and_sysfs()
         
         threading.Thread(target=self.detect_monitors_bg, daemon=True).start()
+        
+        self.last_state_mtime = 0
+        GLib.timeout_add(1000, self.poll_daemon_state)
+
+    def poll_daemon_state(self):
+        if os.path.exists(STATE_FILE):
+            try:
+                mtime = os.path.getmtime(STATE_FILE)
+                if mtime != self.last_state_mtime:
+                    self.last_state_mtime = mtime
+                    with open(STATE_FILE, "r") as f:
+                        state = json.load(f)
+                    for mid, val in state.items():
+                        if mid == "all":
+                            for s in self.sliders.values():
+                                if not s.has_focus():
+                                    self.update_scale_silently(s, val)
+                        elif mid in self.sliders:
+                            if not self.sliders[mid].has_focus():
+                                self.update_scale_silently(self.sliders[mid], val)
+            except: pass
+        return True
 
     def on_close_request(self, window):
         dialog = Adw.MessageDialog(
@@ -431,7 +540,7 @@ class LumeWindow(Adw.ApplicationWindow):
             name = os.path.basename(path)
             monitor_id = f"sysfs_{name}"
             if monitor_id not in self.monitors:
-                self.add_monitor(Monitor(monitor_id, f"Tela Integrada ({name})", "sysfs", path))
+                self.add_monitor(Monitor(monitor_id, f"Built-in ({name})", "sysfs", path))
                 has_monitors = True
         
         if os.path.exists(CACHE_FILE):
