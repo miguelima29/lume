@@ -22,6 +22,29 @@ sudo dnf install ./lume-1.0.0-1.noarch.rpm
 
 ---
 
+## Desinstalação
+
+Como o Lume utiliza instaladores nativos, ele pode ser removido facilmente através do gerenciador de pacotes do seu sistema.
+
+**Para desinstalar no Ubuntu/Debian:**
+```bash
+sudo apt remove lume
+```
+
+**Para desinstalar no Fedora/openSUSE:**
+```bash
+sudo dnf remove lume
+```
+
+Se quiser limpar completamente os arquivos de configuração local e rotinas do seu usuário:
+```bash
+rm -rf ~/.config/lume
+rm -f ~/.config/autostart/lume-daemon.desktop
+rm -f ~/.cache/lume.json
+```
+
+---
+
 ## Recursos Principais
 - **Design Minimalista:** Integração nativa com o ecossistema GNOME (GTK4 + Libadwaita).
 - **Controle Simultâneo:** Deslize o brilho de várias telas ao mesmo tempo de forma assíncrona, sem o app travar ou engasgar.
